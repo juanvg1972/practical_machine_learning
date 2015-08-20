@@ -1,22 +1,251 @@
 ---
 title: "Practical_machine_learning_project"
-author: "Juan Vidal"
-date: "18 de agosto de 2015"
+author: "Juan Vidal Gil"
+date: "20 de agosto de 2015"
 output: html_document
 ---
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+This is the project for Coursera Practical Machine Learining of
+Juan Vidal Gil.
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+The first step is to load the librarys needed for the project
 
 ```{r}
-summary(cars)
+library(AppliedPredictiveModeling)
+library(caret)
+library(rpart)
+library(randomForest)
 ```
 
-You can also embed plots, for example:
+## Data preparation
 
-```{r, echo=FALSE}
-plot(cars)
+First, I read the input data, treating NA
+
+```{r}
+training <- read.csv("pml-training.csv",na.strings=c("NA",""), header=TRUE)
+testing <- read.csv("pml-testing.csv",na.strings=c("NA",""), header=TRUE)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+Take a look to names of columns and distribution of classe variable
+
+```{r}
+columns <- colnames(training)
+table(training$classe)
+```
+
+It has a good distribution (classe) for classification algorithims and we
+can also see that we can't use binomial algorithim like logistic regression
+
+Obtain near zero variation values 
+
+```{r}
+nzv <- nearZeroVar(training, saveMetrics=TRUE)
+```
+
+Eliminate near zero values
+
+```{r}
+cols <- nzv$nzv == FALSE
+training2 <- training[,cols]
+testing2 <- testing[,cols]
+```
+
+I create as usual a dataset to train the model and a dataset to test it
+
+```{r}
+set.seed(1972)
+inTrain <- createDataPartition(y=training2$classe, p=0.6, list=FALSE)
+wk_training <- training2[inTrain,]
+wk_testing <- training2[-inTrain,]
+```
+
+
+Process to drop NA cols
+
+
+```{r}
+nonNAs <- function(x) {
+  as.vector(apply(x, 2, function(x) length(which(!is.na(x)))))
+}
+
+colnames_train <- colnames(wk_training)
+
+
+# Create vector of missing data or NA columns to drop.
+colcnts <- nonNAs(wk_training)
+drops <- c()
+for (cnt in 1:length(colcnts)) {
+  if (colcnts[cnt] < nrow(wk_training)) {
+    drops <- c(drops, colnames_train[cnt])
+  }
+}
+
+# Drop NA data and the first 7 columns because we don't need it for predicting.
+wk_training <- wk_training[,!(names(wk_training) %in% drops)]
+wk_training <- wk_training[,8:length(colnames(wk_training))]
+
+wk_testing <- wk_testing[,!(names(wk_testing) %in% drops)]
+wk_testing <- wk_testing[,8:length(colnames(wk_testing))]
+
+```
+
+Show remaining columns and dimension of datasets
+
+```{r}
+colnames(wk_training)
+dim(wk_training); dim(wk_testing)
+```
+
+Looking for correlations:
+
+```{r}
+# Make a data.frame with only numeric cols
+wk_training_num <- wk_training
+nums <- sapply(wk_training_num, is.numeric)
+wk_training_num <- wk_training_num[,nums]
+corr_mat <- abs(cor(wk_training_num))
+diag(corr_mat) <- 0
+which(corr_mat > 0.8, arr.ind=T)
+```
+
+## Predictions models
+
+We create a first model based in decision tree algorithim CART:
+
+```{r}
+set.seed(1972)
+model_dt <- train(wk_training$classe ~ ., data = wk_training, method="rpart")
+print(model_dt, digits=3)
+```
+
+I run against wk_testing 
+
+```{r}
+predictions_dt <- predict(model_dt, newdata=wk_testing)
+confusionMatrix(predictions_dt, wk_testing$classe)
+```
+
+I get an accuracy of 0.5607. Not very good.
+
+Now I will try CART with preprocessing (centered, scaled) 
+
+```{r}
+set.seed(1972)
+model_dt2 <- train(wk_training$classe ~ .,  preProcess=c("center", "scale"), data = wk_training, method="rpart")
+print(model_dt2, digits=3)
+
+predictions_dt2 <- predict(model_dt2, newdata=wk_testing)
+confusionMatrix(predictions_dt2, wk_testing$classe)
+```
+
+I didn't get improvement with that preprocessing
+
+Now I try with preprocessing and cross-validation
+
+
+```{r}
+set.seed(1972)
+model_dt3 <- train(wk_training$classe ~ .,  preProcess=c("center", "scale"),
+                   trControl=trainControl(method = "cv", number = 4), data = wk_training, method="rpart")
+print(model_dt3, digits=3)
+
+predictions_dt3 <- predict(model_dt3, newdata=wk_testing)
+confusionMatrix(predictions_dt3, wk_testing$classe)
+```
+
+I don't get improvement with preprocessing + cv
+
+Now I try CAR with PCA preprocessing
+
+
+```{r}
+set.seed(1972)
+model_dt4 <- train(wk_training$classe ~ ., data = wk_training, method="rpart",
+                  preProcess = "pca", trControl = trainControl(preProcOptions = list(thresh = 0.8)))
+print(model_dt4, digits=3)
+
+# Run against wk_testing 
+predictions_dt4 <- predict(model_dt4, newdata=wk_testing)
+confusionMatrix(predictions_dt4, wk_testing$classe)
+```
+
+With PCA the accuracy get worse
+
+We create a second model using Random Forest:
+
+```{r}
+set.seed(1972)
+model_rf <- train(wk_training$classe ~ ., method="rf", 
+            trControl=trainControl(method = "cv", number = 4), data=wk_training)
+
+print(model_rf, digits=3)
+
+predictions_rf <- predict(model_rf, newdata=wk_testing)
+confusionMatrix(predictions_rf, wk_testing$classe)
+```
+
+I get an accuracy of 0.9913 much better than simple decision tree 
+
+Now I test RF adding preprocesing (centered, scaled)
+
+```{r}
+set.seed(1972)
+model_rf2 <- train(wk_training$classe ~ ., method="rf", preProcess=c("center", "scale"),
+                  trControl=trainControl(method = "cv", number = 4), data=wk_training)
+
+print(model_rf2, digits=3)
+
+predictions_rf2 <- predict(model_rf2, newdata=wk_testing)
+confusionMatrix(predictions_rf2, wk_testing$classe)
+```
+
+I get the same accuraccy
+
+We create a third model using SVM algorithm:
+
+```{r}
+set.seed(1972)
+ctrl <- trainControl(method = "repeatedcv", repeats = 10)
+model_svm <- train(wk_training$classe ~ ., data=wk_training, method = "svmLinear", trControl = ctrl)
+
+print(model_svm, digits=3)
+
+predictions_svm <- predict(model_svm, newdata=wk_testing)
+confusionMatrix(predictions_svm, wk_testing$classe)
+```
+
+The accuracy is 0.7666 lower than Random Forest
+
+## Conclusion and predictions
+
+The best model is random forest: model_rf, because it has the lowest
+error rate: 0,0087
+
+I get variable importance of final model
+
+
+```{r}
+varImp(model_rf)
+```
+
+I run against 20 testing set provided in the exercise
+
+```{r}
+predictions  <- predict(model_rf, newdata=testing)
+```
+
+I get files with predictions for submission
+
+
+```{r}
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+
+pml_write_files(predictions)
+```
+
